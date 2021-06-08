@@ -5,7 +5,6 @@ import numpy as np
 from enum import Enum
 import matplotlib.pyplot as plt
 
-
 class Actions(Enum):
     Sell = 0
     Buy = 1
