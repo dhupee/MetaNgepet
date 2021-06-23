@@ -1,4 +1,6 @@
 {
     "python.pythonPath": "C:\\Users\\dhupee\\anaconda3\\envs\\DeepL_3.6\\python.exe",
-    "jupyter.jupyterServerType": "local"
+    "jupyter.jupyterServerType": "local",
+    "jupyter.codeLenses": " ",
+    "jupyter.markdownRegularExpression": "^(#\\s*%%\\s*\\[markdown\\]|#\\s*\\<markdowncell\\>)",
 }
