@@ -1,0 +1,5 @@
+# Ignore every config crefential I make
+config.py
+
+# Ignore pycache
+__pycache__
