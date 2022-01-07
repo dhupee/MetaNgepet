@@ -3,3 +3,6 @@ config.py
 
 # Ignore pycache
 __pycache__
+
+# Ignore saved model
+saved_model/
