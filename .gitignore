@@ -6,3 +6,9 @@ __pycache__
 
 # Ignore saved model
 saved_model/
+
+# Ignore saved scaler
+saved_scaler/
+
+# Ignore used model & scaler folder
+used_model-scaler/
