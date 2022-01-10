@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from finta import TA
 
-from datetime import datetime
+from datetime import datetime, timezone
 from time import sleep
 import os, pytz
 import MetaTrader5 as mt5
@@ -26,14 +26,20 @@ password = config.password  #Password number
 server = config.mt5_server  #Server name
 path = config.mt5_path      #path of Metatrader5 director
 
+risk_tolerance = config.risk_tolerance
 
-timezone = pytz.timezone("Etc/UTC") # set time zone to UTC
+timezone = pytz.timezone("EET") # set time zone to EET
 symbol = config.symbol
 timeframe = config.timeframe
 bars = 500
 
-model_filename = 'MetaNgepet\saved_model\MetaNgepet_{}_{}_LinearReg_Model.pkl'.format(symbol, timeframe)
-scaler_filename = 'MetaNgepet\saved_scaler\MetaNgepet_{}_{}_LinearReg_Scaler.pkl'.format(symbol, timeframe)
+trading_day = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+trading_minute = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
+
+model_filename = 'metangepet/used_model-scaler/{}_{}/MetaNgepet_{}_{}_LinearReg_Model.pkl'.format(symbol, timeframe, symbol, timeframe)
+scaler_filename = 'metangepet/used_model-scaler/{}_{}/MetaNgepet_{}_{}_LinearReg_Scaler.pkl'.format(symbol, timeframe, symbol, timeframe)
+
+trade_check = False
 
 #===================================================================
 
@@ -61,6 +67,8 @@ else:
     print("MetaTrader5 Initialized!")
     account_info_dict = mt5.account_info()._asdict()
     Acc_Info = pd.DataFrame(list(account_info_dict.items()),columns=['property','value'])
+    #print("\n", "account_info() as dataframe:")
+    #print(Acc_Info)
 
 #Extract Account info from dataframe
 leverage = Acc_Info.loc[2, "value"]
@@ -69,16 +77,18 @@ profit = Acc_Info.loc[12, "value"]
 equity = Acc_Info.loc[13, "value"]
 margin_free = Acc_Info.loc[15, "value"]
 
+"""
 print(leverage)
 print(balance)
 print(profit)
 print(equity)
 print(margin_free)
-
+"""
 # extract info of terminal
 terminal_info_dict = mt5.terminal_info()._asdict()
-for prop in terminal_info_dict:
-    print("  {}={}".format(prop, terminal_info_dict[prop]))
+terminal_info = pd.DataFrame(list(terminal_info_dict.items()),columns=['property','value'])
+print("\n", "terminal_info() as dataframe:")
+#print(terminal_info)
 
 # extract information from pair and timeframe
 print ("------------------------------")
@@ -86,15 +96,14 @@ symbol_info = mt5.symbol_info(symbol)
 if symbol_info!=None:
     # display the terminal data 'as is'    
     #print(symbol_info)
-    print("\n","{}:".format(symbol))
-    print("spread =",symbol_info.spread,", digits =",symbol_info.digits, "\n")
-    print(symbol_info.swap_long, '\n')
+    print("{}:".format(symbol))
+    #print("spread =",symbol_info.spread,", digits =",symbol_info.digits, "\n")
     print ("------------------------------")
 else:
     print("There is no such symbol of {}".format(symbol))
 
 def get_price(symbol, timeframe, bars):
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, bars + 1)
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars + 1)
 
     # create DataFrame out of the obtained data
     rates_frame = pd.DataFrame(rates, dtype=np.dtype("float"))
@@ -212,25 +221,149 @@ def generate_features(df):
     df_new = df_new.dropna(axis=0)
     return df_new
 
+def generate_signal(df_features, rates_frame, predictions):
+    df_signal = pd.DataFrame(index=df_features.index)
+    
+    df_signal['predictions'] = predictions
+    df_signal['predictions_5m'] = df_signal['predictions'].shift(1)
+    df_signal['EMA_4h'] = TA.EMA(rates_frame, 48)
+    df_signal['EMA_12h'] = TA.EMA(rates_frame, 144)
+
+    df_signal['avg_price_30m'] = rates_frame['close'].rolling(window=6).mean().shift(1)
+    df_signal['avg_price_4h'] = rates_frame['close'].rolling(window=48).mean().shift(1)
+
+    df_signal['ratio_avg_price_30m_4h'] = df_signal['avg_price_30m'] / df_signal['avg_price_4h']
+
+    df_signal['open'] = rates_frame['open']
+    df_signal['open_5m'] = rates_frame['open'].shift(1)
+    #df_signal['close_5m'] = rates_frame['close'].shift(1)
+    df_signal['high_5m'] = rates_frame['high'].shift(1)
+    df_signal['low_5m'] = rates_frame['low'].shift(1)
+
+    return df_signal
+
+def get_buy_condition(df_signal, now_datetime, digits):
+    # get signal values
+    prediction_5m_value = round(df_signal.loc[now_datetime]["predictions_5m"], digits)
+    ema_4h = round(df_signal.loc[now_datetime]["EMA_4h"], digits)
+    ema_12h = round(df_signal.loc[now_datetime]["EMA_12h"], digits)
+    ratio_price = round(df_signal.loc[now_datetime]["ratio_avg_price_30m_4h"], digits)
+    open = round(df_signal.loc[now_datetime]["open"], digits)
+    open_5m = round(df_signal.loc[now_datetime]["open_5m"], digits)
+    #close_5m = round(df_signal.loc[now_datetime]["close_5m"], digits)
+    high_5m = round(df_signal.loc[now_datetime]["high_5m"], digits)
+    #low_5m = round(df_signal.loc[now_datetime]["low_5m"], digits)
+
+    if open > ema_4h and ema_4h > ema_12h and ratio_price > 1 and high_5m > prediction_5m_value > open_5m :
+        buy_condition = True
+    else:
+        buy_condition = False
+
+    return buy_condition
+
+def get_sell_condition(df_signal, now_datetime, digits):
+    # get signal values
+    prediction_5m_value = round(df_signal.loc[now_datetime]["predictions_5m"], digits)
+    ema_4h = round(df_signal.loc[now_datetime]["EMA_4h"], digits)
+    ema_12h = round(df_signal.loc[now_datetime]["EMA_12h"], digits)
+    ratio_price = round(df_signal.loc[now_datetime]["ratio_avg_price_30m_4h"], digits)
+    open = round(df_signal.loc[now_datetime]["open"], digits)
+    open_5m = round(df_signal.loc[now_datetime]["open_5m"], digits)
+    #close_5m = round(df_signal.loc[now_datetime]["close_5m"], digits)
+    #high_5m = round(df_signal.loc[now_datetime]["high_5m"], digits)
+    low_5m = round(df_signal.loc[now_datetime]["low_5m"], digits)
+
+    if open < ema_4h and ema_4h < ema_12h and ratio_price < 1 and low_5m < prediction_5m_value < open_5m :
+        sell_condition = True
+    else:
+        sell_condition = False
+
+    return sell_condition
+
+def get_margin(symbol, lot, ask):
+    action = mt5.ORDER_TYPE_BUY
+    symbol = symbol
+    margin = mt5.order_calc_margin(action, symbol, lot, ask)
+    
+    return margin
+
+def get_lot(risk_tolerance, symbol, symbol_info, ask):
+    volume_min = symbol_info.volume_min
+    volume_max = symbol_info.volume_max
+    volume_step = symbol_info.volume_step
+    lot = volume_min
+    margin_tolerance = margin_free * risk_tolerance
+
+    margin = get_margin(symbol, lot, ask)
+    while margin <= margin_tolerance and lot < volume_max:
+        lot += volume_step
+        margin = get_margin(symbol, lot, ask)
+    return lot
 
 
-
-
-
-
+#===================Main Loop===================#
 
 while True:
-    
-    now = datetime.now()
-    print(now.strftime("%H:%M:%S"))
+    now = datetime.now(timezone)
+    now_minute = now.strftime("%M")
+    now_day = now.strftime("%A")
+    now_datetime = now.strftime("%Y-%m-%d %H:%M") # Year-Month-Day Hour:Minute
 
-    """
-    rates_frame = get_price(symbol, timeframe, bars)
-    features = generate_features(rates_frame)
-    
-    features_scaled = scaler.transform(features)
+    ask = mt5.symbol_info_tick(symbol).ask
+    bid = mt5.symbol_info_tick(symbol).bid
 
-    predictions = model.predict(features_scaled)
-    """
+    lot = get_lot(risk_tolerance, symbol, symbol_info, ask)
 
-    sleep(1)
+    if now_day in trading_day:
+        if now_minute in trading_minute:
+            order_amount = mt5.positions_get(symbol = symbol)
+            if len(order_amount) == 0 and trade_check == False :
+                print("analyzing.......")
+
+                trade_check = True
+                sleep(2.5)
+
+                # get neccesarry symbol info
+                symbol_info = mt5.symbol_info(symbol)
+                spread = symbol_info.spread
+                digits = symbol_info.digits
+                #deviation = (round((spread * pow(10, digits*(-1))), digits))
+                deviation = spread
+
+                # get few hundred past rates
+                rates_frame = get_price(symbol, timeframe, bars)
+                #print(rates_frame)
+                
+                # generate & scale feature
+                features = generate_features(rates_frame)
+                #print(features)
+                features_scaled = scaler.transform(features)
+
+                # make a prediction
+                predictions = model.predict(features_scaled)
+
+                # generate signals
+                df_signal = generate_signal(features, rates_frame, predictions)
+                #print(df_signal)
+
+                prediction_value = round(df_signal.loc[now_datetime]["predictions"], digits)
+                #print(prediction_value)
+
+                buy_condition = get_buy_condition(df_signal, now_datetime, digits)
+                sell_condition = get_sell_condition(df_signal, now_datetime, digits)
+
+                if buy_condition == True:
+                    print("there are buy signal at {}".format(now_datetime))
+                if sell_condition == True:
+                    print("there are sell signal at {}".format(now_datetime))
+                else:
+                    print("no signal yet, be patience!")
+            elif len(order_amount) != 0 and trade_check == False:
+                trade_check == True
+                print("there is an order, no trade on {} just yet".format(symbol))       
+        elif now_minute not in trading_minute :
+            trade_check = False
+            sleep(1)
+    else:
+        print("today is not a trade day, rest")
+        sleep(1800)
