@@ -33,6 +33,7 @@ server = config.mt5_server  #Server name
 path = config.mt5_path      #path of Metatrader5 director
 
 risk_tolerance = config.risk_tolerance
+rr_ratio = config.rr_ratio
 
 timezone = pytz.timezone("EET") # set time zone to EET
 symbol = config.symbol
@@ -41,6 +42,8 @@ bars = 200
 
 trading_day = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 trading_minute = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
+
+open_orders = [pd.DataFrame(columns=['Symbol', 'Position_ID', 'Lot'])]
 
 #model_filename = 'used_model/Model_MetaNgepet_{}_{}.pkl'.format(symbol, timeframe)
 #scaler_filename = 'used_model/Scaler_MetaNgepet_{}_{}.pkl'.format(symbol, timeframe)
@@ -161,6 +164,7 @@ def generate_signal(rates_frame):
     df_signal['CCI'] = CCI.shift(1)
     df_signal['CCI_1'] = CCI.shift(2)
     df_signal['AO'] = AO.shift(1)
+    df_signal['AO_growth'] = AO.shift(1) - AO.shift(2)
 
 
     df_signal = df_signal.dropna(axis=0)
@@ -213,10 +217,10 @@ def get_sell_condition(df_signal, now_datetime, digits):
 
     return sell_condition
 
-def get_stop_buy_condition(df_signal, now_datetime, digits):
+def get_buy_reversal_condition(df_signal, now_datetime, digits):
     pass
     
-def get_stop_sell_condition(df_signal, now_datetime, digits):
+def get_sell_reversal_condition(df_signal, now_datetime, digits):
     pass
 
 def get_margin(symbol, lot, ask):
@@ -239,9 +243,6 @@ def get_lot(risk_tolerance, symbol, symbol_info, ask):
         margin = get_margin(symbol, lot, ask)
     return lot
 
-def get_open_order(symbol):
-    pass
-
 def get_buy(symbol):
     pass
 
@@ -254,6 +255,7 @@ def close_order(symbol, ticket):
 
 #===================Main Loop===================#
 """
+Note:
 Sell uses bid price, while Buy uses ask price
 """
 
@@ -267,34 +269,30 @@ while True:
     if now_day in trading_day:
         if now_minute in trading_minute:
             
+            # gonna add for loop here, for multiple symbol
+            print("analyzing {}....".format(symbol))
             symbol_info = mt5.symbol_info(symbol)
             order_amount = mt5.positions_get(symbol = symbol)
-            ask = mt5.symbol_info_tick(symbol).ask
-            bid = mt5.symbol_info_tick(symbol).bid
-            lot = get_lot(risk_tolerance, symbol, symbol_info, ask)
             
             if len(order_amount) == 0 and trade_check == False :
-                print("analyzing.......{}".format(symbol))
-
-                trade_check = True
-
                 # get neccesarry symbol info
+                ask = mt5.symbol_info_tick(symbol).ask
+                bid = mt5.symbol_info_tick(symbol).bid
+                lot = get_lot(risk_tolerance, symbol, symbol_info, ask)
+
                 spread = symbol_info.spread
                 digits = symbol_info.digits
-                #deviation = (round((spread * pow(10, digits*(-1))), digits))
+                tolerance = (round((spread * pow(10, digits*(-1))), digits))
                 deviation = spread
 
                 # get few hundred past rates
                 rates_frame = get_price(symbol, timeframe, bars)
                 #print(rates_frame)
-
-
                 now_index = now_datetime in rates_frame.index
                 while now_index == False:
-                    sleep(0.5)
+                    sleep(0.25)
                     rates_frame = get_price(symbol, timeframe, bars)
                     now_index = now_datetime in rates_frame.index
-
                 df_signal = generate_signal(rates_frame)
                 #print(df_signal)
 
@@ -303,23 +301,41 @@ while True:
                 
                 if buy_condition == True:
                     print("there are buy signal for {} at {} \n".format(symbol, now_datetime))
+                    
+                    open = round(df_signal.loc[now_datetime]["open"], digits)
+                    highest_30m = df_signal.loc[now_datetime]["highest_30m"]
+                    lowest_30m = df_signal.loc[now_datetime]["lowest_30m"]
+
+                    buy_request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": symbol,
+                        "volume": lot,
+                        "type": mt5.ORDER_TYPE_BUY,
+                        "price": open,
+                        "sl": lowest_30m - tolerance,
+                        "tp": open + ((open - lowest_30m) * rr_ratio),
+                        "deviation": deviation,
+                        "magic": 42069666,
+                        "comment": "python script open",
+                        "type_time": mt5.ORDER_TIME_DAY,
+                        "type_filling": mt5.ORDER_FILLING_RETURN,
+                    }
+
+
                 elif sell_condition == True:
                     print("there are sell signal for {} at {} \n".format(symbol, now_datetime))
+
+                    sell_request = {}
                 else:
-                    print("no signal yet, be patience! \n")
-
+                    print("no signal yet on {} yet, be patience! \n".format(symbol))
             elif len(order_amount) != 0 and trade_check == False:
-                trade_check = True
+                # make an if-else for stop trade
 
-                orders = get_open_order(symbol)
-                print(orders)
-
-                print("there is an order, no trade on {} just yet \n".format(symbol))    
-
+                print("there is an order, no trade on {} just yet \n".format(symbol))
+            trade_check = True
         elif now_minute not in trading_minute :
             trade_check = False
             sleep(1)
-
     else:
-        print("today is not a trade day, rest")
-        sleep(1800)
+        print("today is not a trade day, time to rest \n")
+        sleep(1800) # 1800 Seconds = 30 Minutes
